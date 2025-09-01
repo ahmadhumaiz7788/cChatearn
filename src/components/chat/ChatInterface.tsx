@@ -7,7 +7,7 @@ import { ChatMessage } from './ChatMessage';
 import { useAuth } from '@/hooks/useAuth';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
-import { Send, Loader2, Sparkles } from 'lucide-react';
+import { Send, Loader2, Sparkles, Key } from 'lucide-react';
 
 interface Message {
   id: string;
@@ -28,8 +28,10 @@ export const ChatInterface = ({ conversationId, onConversationUpdate }: ChatInte
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [currentConversationId, setCurrentConversationId] = useState<string | undefined>(conversationId);
+  const [geminiApiKey, setGeminiApiKey] = useState(localStorage.getItem('gemini_api_key') || '');
+  const [showApiKeyInput, setShowApiKeyInput] = useState(!geminiApiKey);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const { session } = useAuth();
+  const { session, user } = useAuth();
 
   useEffect(() => {
     if (conversationId && conversationId !== currentConversationId) {
@@ -78,7 +80,7 @@ export const ChatInterface = ({ conversationId, onConversationUpdate }: ChatInte
   };
 
   const sendMessage = async () => {
-    if (!input.trim() || isGenerating || !session) return;
+    if (!input.trim() || isGenerating || !session || !geminiApiKey) return;
 
     const userMessage = input.trim();
     setInput('');
@@ -94,29 +96,73 @@ export const ChatInterface = ({ conversationId, onConversationUpdate }: ChatInte
     setMessages(prev => [...prev, tempUserMessage]);
 
     try {
-      const response = await supabase.functions.invoke('chat-with-gemini', {
-        body: {
-          message: userMessage,
-          conversationId: currentConversationId,
-        },
-      });
+      let activeConversationId = currentConversationId;
 
-      if (response.error) {
-        throw new Error(response.error.message || 'Failed to send message');
-      }
+      // Create new conversation if needed
+      if (!activeConversationId) {
+        const { data: newConversation, error: convError } = await supabase
+          .from('conversations')
+          .insert({
+            user_id: user.id,
+            title: userMessage.slice(0, 50) + (userMessage.length > 50 ? '...' : ''),
+          })
+          .select()
+          .single();
 
-      const { response: aiResponse, conversationId: newConvId, tokensUsed, responseTime } = response.data;
-
-      // Update conversation ID if it's a new conversation
-      if (newConvId && newConvId !== currentConversationId) {
-        setCurrentConversationId(newConvId);
+        if (convError || !newConversation) {
+          throw new Error('Failed to create conversation');
+        }
+        activeConversationId = newConversation.id;
+        setCurrentConversationId(activeConversationId);
         onConversationUpdate();
       }
 
-      // Reload messages to get the actual stored messages with IDs
-      if (newConvId) {
-        await loadMessages(newConvId);
+      // Get conversation history
+      const { data: messageHistory = [] } = await supabase
+        .from('messages')
+        .select('role, content')
+        .eq('conversation_id', activeConversationId)
+        .order('created_at', { ascending: true })
+        .limit(10);
+
+      // Build Gemini messages
+      const geminiMessages = [
+        { role: 'user', parts: [{ text: 'You are a helpful AI assistant.' }] },
+        { role: 'model', parts: [{ text: 'I understand. I will respond accordingly.' }] },
+        ...messageHistory.map((m) =>
+          m.role === 'user'
+            ? { role: 'user', parts: [{ text: m.content }] }
+            : { role: 'model', parts: [{ text: m.content }] }
+        ),
+        { role: 'user', parts: [{ text: userMessage }] },
+      ];
+
+      // Call Gemini API directly
+      const geminiResponse = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: geminiMessages }),
+        }
+      );
+
+      if (!geminiResponse.ok) {
+        const errorText = await geminiResponse.text();
+        throw new Error(`Gemini API error: ${geminiResponse.status} - ${errorText}`);
       }
+
+      const geminiData = await geminiResponse.json();
+      const aiResponse = geminiData.candidates?.[0]?.content?.parts?.[0]?.text ?? 'No response';
+
+      // Save both messages to database
+      await supabase.from('messages').insert([
+        { conversation_id: activeConversationId, role: 'user', content: userMessage },
+        { conversation_id: activeConversationId, role: 'assistant', content: aiResponse }
+      ]);
+
+      // Reload messages to get the actual stored messages with IDs
+      await loadMessages(activeConversationId);
 
     } catch (error) {
       console.error('Error sending message:', error);
@@ -131,6 +177,15 @@ export const ChatInterface = ({ conversationId, onConversationUpdate }: ChatInte
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  const saveApiKey = () => {
+    localStorage.setItem('gemini_api_key', geminiApiKey);
+    setShowApiKeyInput(false);
+    toast({
+      title: 'API Key Saved',
+      description: 'Your Gemini API key has been saved locally.',
+    });
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -173,12 +228,41 @@ export const ChatInterface = ({ conversationId, onConversationUpdate }: ChatInte
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="p-4 border-b border-glass-border glass">
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-semibold">
-            {currentConversationId ? 'FluxOracle Chat' : 'New Conversation'}
-          </h1>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-primary" />
+            <h1 className="text-lg font-semibold">
+              {currentConversationId ? 'FluxOracle Chat' : 'New Conversation'}
+            </h1>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowApiKeyInput(!showApiKeyInput)}
+          >
+            <Key className="h-4 w-4" />
+          </Button>
         </div>
+        
+        {showApiKeyInput && (
+          <div className="mt-4 p-4 bg-muted/50 rounded-lg">
+            <div className="flex gap-2">
+              <Input
+                type="password"
+                placeholder="Enter your Gemini API key..."
+                value={geminiApiKey}
+                onChange={(e) => setGeminiApiKey(e.target.value)}
+                className="flex-1"
+              />
+              <Button onClick={saveApiKey} disabled={!geminiApiKey.trim()}>
+                Save
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              Your API key is stored locally in your browser. Get one from Google AI Studio.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Messages */}
@@ -233,7 +317,7 @@ export const ChatInterface = ({ conversationId, onConversationUpdate }: ChatInte
             />
             <Button
               onClick={sendMessage}
-              disabled={!input.trim() || isGenerating}
+              disabled={!input.trim() || isGenerating || !geminiApiKey}
               className="bg-gradient-primary hover:opacity-90 interactive"
             >
               {isGenerating ? (
