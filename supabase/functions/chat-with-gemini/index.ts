@@ -43,8 +43,11 @@ serve(async (req) => {
     // Get authorization header
     const authHeader = req.headers.get('Authorization');
     if (!authHeader) {
+      console.log('No authorization header found');
       throw new Error('No authorization header');
     }
+    
+    console.log('Authorization header present:', authHeader.substring(0, 20) + '...');
 
     // Create Supabase client
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -53,9 +56,16 @@ serve(async (req) => {
 
     // Get current user
     const { data: { user }, error: userError } = await supabase.auth.getUser();
-    if (userError || !user) {
-      throw new Error('Authentication failed');
+    if (userError) {
+      console.error('User error:', userError);
+      throw new Error(`Authentication failed: ${userError.message}`);
     }
+    if (!user) {
+      console.error('No user found');
+      throw new Error('Authentication failed: No user found');
+    }
+    
+    console.log('User authenticated:', user.id);
 
     const { message, conversationId, stylePackId, isBoost } = await req.json() as ChatRequest;
     console.log('Processing message for user:', user.id);
