@@ -52,25 +52,41 @@ export const ConversationSidebar = ({
   }, [user]);
 
   const loadConversations = async () => {
-    const { data } = await supabase
-      .from('conversations')
-      .select('*')
-      .order('updated_at', { ascending: false });
-    
-    if (data) {
-      setConversations(data);
+    try {
+      const { data, error } = await supabase
+        .from('conversations')
+        .select('id, title, created_at')
+        .order('updated_at', { ascending: false });
+
+      if (error) {
+        console.error('Error loading conversations:', error);
+        return;
+      }
+
+      setConversations(data || []);
+    } catch (error) {
+      console.error('Unexpected error loading conversations:', error);
     }
   };
 
   const loadProfile = async () => {
-    const { data } = await supabase
-      .from('profiles')
-      .select('display_name, total_points, current_streak')
-      .eq('user_id', user?.id)
-      .single();
+    if (!user?.id) return;
     
-    if (data) {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('display_name, total_points, current_streak')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error('Error loading profile:', error);
+        return;
+      }
+
       setProfile(data);
+    } catch (error) {
+      console.error('Unexpected error loading profile:', error);
     }
   };
 

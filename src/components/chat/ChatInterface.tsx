@@ -43,19 +43,28 @@ export const ChatInterface = ({ conversationId, onConversationUpdate }: ChatInte
   }, [messages]);
 
   const loadMessages = async (convId: string) => {
-    const { data } = await supabase
-      .from('messages')
-      .select('*')
-      .eq('conversation_id', convId)
-      .order('created_at', { ascending: true });
-    
-    if (data) {
-      // Type assertion to ensure role is the correct union type
-      const typedMessages = data.map(msg => ({
-        ...msg,
-        role: msg.role as 'user' | 'assistant'
-      }));
-      setMessages(typedMessages);
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('conversation_id', convId)
+        .order('created_at', { ascending: true });
+      
+      if (error) {
+        console.error('Error loading messages:', error);
+        return;
+      }
+      
+      if (data) {
+        // Type assertion to ensure role is the correct union type
+        const typedMessages = data.map(msg => ({
+          ...msg,
+          role: msg.role as 'user' | 'assistant'
+        }));
+        setMessages(typedMessages);
+      }
+    } catch (error) {
+      console.error('Unexpected error loading messages:', error);
     }
   };
 
